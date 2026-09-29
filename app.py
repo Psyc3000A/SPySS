@@ -9,6 +9,12 @@ import seaborn as sns
 import streamlit as st
 from streamlit_ace import st_ace
 import hashlib
+import io
+import zipfile
+import tempfile
+import xml.etree.ElementTree as ET
+import copy
+from bs4 import BeautifulSoup
 
 st.set_page_config(page_title="Student Statistics Lab", layout="wide")
 st.title("Student Statistics Lab")
@@ -72,10 +78,19 @@ if st.checkbox("Show data preview", value=True):
     st.dataframe(df.head(50), width="stretch")
 
 analysis = st.sidebar.selectbox("Analysis", [
-    "1. Descriptive statistics", "2. Normality and Q-Q plot", "3. Correlation",
-    "4. Partial correlation", "5. T-test", "6. One-way ANOVA",
-    "7. Repeated-measures ANOVA", "8. ANCOVA", "9. Nonparametric test",
-    "10. Linear regression", "11. Cronbach alpha", "12. Chi-square test"
+    "1. Descriptive statistics",
+    "2. Normality and Q-Q plot",
+    "3. Correlation",
+    "4. Partial correlation",
+    "5. T-test",
+    "6. One-way ANOVA",
+    "7. Repeated-measures ANOVA",
+    "8. ANCOVA",
+    "9. Nonparametric test",
+    "10. Linear regression",
+    "11. Cronbach alpha",
+    "12. Chi-square test",
+    "13. Exam generator"
 ])
 st.header(analysis)
 code = ""
@@ -238,13 +253,51 @@ elif analysis.startswith("12."):
     x = st.selectbox("Row variable", all_cols)
     y = st.selectbox("Column variable", [c for c in all_cols if c != x])
     code = f'''expected, observed, result = pg.chi2_independence(data=df, x={x!r}, y={y!r})'''
+elif analysis.startswith("13."):
 
-st.subheader("Editable code")
-#code = st.text_area("Edit before running", code, height=210, label_visibility="collapsed")
+    st.subheader("Generate Multiple Exam Versions")
 
-editor_key = hashlib.md5(code.encode()).hexdigest()
+    uploaded_qti = st.file_uploader(
+        "Upload QTI XML or IMSCC",
+        type=["xml", "imscc"],
+        key="exam_generator"
+    )
 
-code = st_ace(
+    num_tests = st.number_input(
+        "Number of test versions",
+        min_value=1,
+        max_value=100,
+        value=4,
+        step=1
+    )
+
+    compact = st.checkbox(
+        "Compact one-line format",
+        value=True
+    )
+
+    code = "# Exam generator does not use the code editor."
+
+    if uploaded_qti is not None:
+
+        st.success(
+            f"Uploaded: {uploaded_qti.name}"
+        )
+
+        if st.button("Generate Exams"):
+
+            st.info("Generating exams...")
+
+            st.write(
+                f"Will generate {num_tests} versions."
+            )
+
+if not analysis.startswith("13."):
+    st.subheader("Editable code")
+
+    editor_key = hashlib.md5(code.encode()).hexdigest()
+
+    code = st_ace(
     value=code.strip(),
     language="python",
     theme="github",
@@ -253,20 +306,22 @@ code = st_ace(
     font_size=14,
     tab_size=4,
     wrap=True,
-    auto_update=True,
-)
-if st.button("Run analysis", type="primary"):
-    env = {"df": df.copy(), "pd": pd, "np": np, "pg": pg, "sns": sns, "plt": plt}
-    try:
-        plt.close("all")
-        exec(code, env)
-        for name in ["result", "posthoc", "observed", "expected"]:
-            if name in env:
-                st.subheader(name.capitalize())
-                value = env[name]
-                st.dataframe(value, width="stretch") if isinstance(value, (pd.DataFrame, pd.Series)) else st.write(value)
-        for number in plt.get_fignums():
-            st.pyplot(plt.figure(number))
-    except Exception:
-        st.error("Analysis failed")
-        st.code(traceback.format_exc())
+    auto_update=True,)
+
+if not analysis.startswith("13."):
+
+    if st.button("Run analysis", type="primary"):
+        env = {"df": df.copy(), "pd": pd, "np": np, "pg": pg, "sns": sns, "plt": plt}
+        try:
+            plt.close("all")
+            exec(code, env)
+            for name in ["result", "posthoc", "observed", "expected"]:
+                if name in env:
+                    st.subheader(name.capitalize())
+                    value = env[name]
+                    st.dataframe(value, width="stretch") if isinstance(value, (pd.DataFrame, pd.Series)) else st.write(value)
+            for number in plt.get_fignums():
+                st.pyplot(plt.figure(number))
+        except Exception:
+            st.error("Analysis failed")
+            st.code(traceback.format_exc())
