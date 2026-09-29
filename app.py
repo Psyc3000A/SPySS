@@ -286,12 +286,177 @@ elif analysis.startswith("13."):
 
         if st.button("Generate Exams"):
 
-            st.info("Generating exams...")
+            questions = []
 
-            st.write(
-                f"Will generate {num_tests} versions."
+            with tempfile.TemporaryDirectory() as tmpdir:
+
+                xml_file = Path(tmpdir) / uploaded_qti.name
+
+                with open(xml_file, "wb") as f:
+                    f.write(uploaded_qti.getbuffer())
+
+                tree = ET.parse(xml_file)
+                root = tree.getroot()
+
+                for item in root.iter():
+
+                    if not item.tag.endswith("item"):
+                        continue
+
+                    question_text = ""
+
+                    mt = item.find(".//{*}presentation//{*}mattext")
+
+                    if mt is not None and mt.text:
+
+                        question_text = BeautifulSoup(
+                            mt.text,
+                            "html.parser"
+                        ).get_text(" ", strip=True)
+
+                    options = []
+                    id_to_text = {}
+
+                    for rl in item.findall(".//{*}response_label"):
+
+                        ident = rl.attrib.get("ident", "")
+
+                        option_mt = rl.find(".//{*}mattext")
+
+                        option_text = ""
+
+                        if option_mt is not None and option_mt.text:
+
+                            option_text = BeautifulSoup(
+                                option_mt.text,
+                                "html.parser"
+                            ).get_text(" ", strip=True)
+
+                        options.append(option_text)
+                        id_to_text[ident] = option_text
+
+                    correct_text = ""
+
+                    for rc in item.findall(".//{*}respcondition"):
+
+                        sv = rc.find(".//{*}setvar")
+
+                        if sv is None:
+                            continue
+
+                        if (sv.text or "").strip() != "100":
+                            continue
+
+                        v = rc.find(".//{*}varequal")
+
+                        if v is not None:
+
+                            ident = (v.text or "").strip()
+
+                            if ident in id_to_text:
+
+                                correct_text = id_to_text[ident]
+                                break
+
+                    if question_text:
+
+                        questions.append({
+                            "question": question_text,
+                            "options": options,
+                            "correct": correct_text
+                        })
+
+            # -------------------------------------
+            # Create ZIP file
+            # -------------------------------------
+
+            zip_buffer = io.BytesIO()
+
+            with zipfile.ZipFile(
+                zip_buffer,
+                "w",
+                zipfile.ZIP_DEFLATED
+            ) as zipf:
+
+                for test_num in range(1, num_tests + 1):
+
+                    rng = np.random.default_rng(test_num)
+
+                    qlist = copy.deepcopy(questions)
+                    rng.shuffle(qlist)
+
+                    test_lines = []
+                    answer_key = []
+
+                    for qnum, q in enumerate(qlist, start=1):
+
+                        options = q["options"].copy()
+
+                        rng.shuffle(options)
+
+                        correct_letter = ""
+                        option_strings = []
+
+                        for idx, option in enumerate(options):
+
+                            letter = chr(65 + idx)
+
+                            option_strings.append(
+                                f"{letter}) {option}"
+                            )
+
+                            if option == q["correct"]:
+                                correct_letter = letter
+
+                        if compact:
+
+                            test_lines.append(
+                                f"{qnum}. {q['question']}    "
+                                + "    ".join(option_strings)
+                            )
+
+                        else:
+
+                            test_lines.append(
+                                f"{qnum}. {q['question']}\n"
+                                + "\n".join(option_strings)
+                            )
+
+                        answer_key.append({
+                            "Question": qnum,
+                            "Answer": correct_letter,
+                            "Correct_Text": q["correct"]
+                        })
+
+                    test_text = "\n\n".join(test_lines)
+
+                    zipf.writestr(
+                        f"test{test_num}.txt",
+                        test_text
+                    )
+
+                    key_csv = pd.DataFrame(
+                        answer_key
+                    ).to_csv(index=False)
+
+                    zipf.writestr(
+                    f"key{test_num}.csv",
+                        key_csv
+                    )
+
+            zip_buffer.seek(0)
+
+            st.success(
+                f"Generated {num_tests} versions from "
+                f"{len(questions)} questions."
             )
 
+            st.download_button(
+                "Download ZIP Package",
+                data=zip_buffer,
+                file_name="exam_versions.zip",
+                mime="application/zip"
+            )
 if not analysis.startswith("13."):
     st.subheader("Editable code")
 
