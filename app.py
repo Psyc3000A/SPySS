@@ -258,8 +258,8 @@ elif analysis.startswith("13."):
     st.subheader("Generate Multiple Exam Versions")
 
     uploaded_qti = st.file_uploader(
-        "Upload QTI XML or IMSCC",
-        type=["xml", "imscc"],
+        "Upload QTI XML",
+        type=["xml"],
         key="exam_generator"
     )
 
@@ -344,7 +344,7 @@ elif analysis.startswith("13."):
                         if sv is None:
                             continue
 
-                        if (sv.text or "").strip() != "100":
+                        if float((sv.text or "0").strip()) != 100:
                             continue
 
                         v = rc.find(".//{*}varequal")
