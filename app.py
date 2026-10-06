@@ -91,7 +91,7 @@ analysis = st.sidebar.selectbox("Analysis", [
     "11. Cronbach alpha",
     "12. Chi-square test",
     "13. Exam generator"
-], index=12)
+], index=0)
 st.header(analysis)
 code = ""
 
