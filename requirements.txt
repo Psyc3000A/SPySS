@@ -7,4 +7,3 @@ gradio>=5.0,<7
 streamlit-ace>=0.1.1
 beautifulsoup4
 python-docx
-Show more lines
