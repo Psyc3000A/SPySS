@@ -18,7 +18,7 @@ from bs4 import BeautifulSoup
 
 st.set_page_config(page_title="Student Statistics Lab", layout="wide")
 st.title("Student Statistics Lab")
-st.caption("pandas for descriptives • seaborn/matplotlib for plots • Pingouin for inference")
+st.caption("pandas for descriptives • seaborn/matplotlib for plots • Pingouin and Statsmodels for inference")
 
 # Load data
 DATASETS = {
@@ -90,7 +90,8 @@ analysis = st.sidebar.selectbox("Analysis", [
     "10. Linear regression",
     "11. Cronbach alpha",
     "12. Chi-square test",
-    "13. Exam generator"
+    "13. Exam generator",
+    "14. Statsmodels regression models"
 ], index=0)
 st.header(analysis)
 code = ""
@@ -253,6 +254,139 @@ elif analysis.startswith("12."):
     x = st.selectbox("Row variable", all_cols)
     y = st.selectbox("Column variable", [c for c in all_cols if c != x])
     code = f'''expected, observed, result = pg.chi2_independence(data=df, x={x!r}, y={y!r})'''
+
+elif analysis.startswith("14."):
+    model_family = st.selectbox("Model family", [
+        "OLS (ANOVA / ANCOVA)",
+        "Logit (binary)",
+        "Probit (binary)",
+        "Ordinal logit",
+        "GLM"
+    ])
+
+    glm_family = None
+    if model_family == "OLS (ANOVA / ANCOVA)":
+        outcome_options = num_cols
+    elif model_family in ["Logit (binary)", "Probit (binary)"]:
+        outcome_options = [c for c in all_cols if df[c].nunique(dropna=True) == 2]
+    elif model_family == "Ordinal logit":
+        outcome_options = [c for c in all_cols if df[c].nunique(dropna=True) >= 2]
+    else:
+        glm_family = st.selectbox("GLM distribution", [
+            "Poisson", "Negative binomial", "Gaussian", "Binomial", "Gamma"
+        ])
+        outcome_options = (
+            [c for c in all_cols if df[c].nunique(dropna=True) == 2]
+            if glm_family == "Binomial" else num_cols
+        )
+
+    if not outcome_options:
+        st.warning("No suitable outcome variable is available for this model.")
+        code = "raise ValueError('Choose a dataset with a suitable outcome variable.')"
+    else:
+        outcome_default = outcome_options.index("outcome") if "outcome" in outcome_options else 0
+        outcome = st.selectbox("Outcome", outcome_options, index=outcome_default)
+        predictor_options = [c for c in all_cols if c != outcome]
+        predictor_defaults = [
+            c for c in predictor_options
+            if c.lower() not in {"id", "participant", "subject"}
+            and not c.lower().endswith("_id")
+        ][:3]
+        predictors = st.multiselect(
+            "Predictors", predictor_options, default=predictor_defaults
+        )
+        predictor_terms = [
+            f"C(Q({column!r}))"
+            if not pd.api.types.is_numeric_dtype(df[column])
+            else f"Q({column!r})"
+            for column in predictors
+        ]
+        rhs = " + ".join(predictor_terms) or "1"
+        formula = f"Q({outcome!r}) ~ {rhs}"
+        selected_columns = [outcome, *predictors]
+
+        if model_family == "OLS (ANOVA / ANCOVA)":
+            code = f'''import statsmodels.formula.api as smf
+from statsmodels.stats.anova import anova_lm
+
+d = df[{selected_columns!r}].dropna().copy()
+model = smf.ols(formula={formula!r}, data=d).fit()
+result = model.summary2().tables[1]
+overall = pd.DataFrame({{"F": [model.fvalue], "df_model": [model.df_model], "p-value": [model.f_pvalue]}})
+anova = anova_lm(model, typ=2)'''
+
+        elif model_family in ["Logit (binary)", "Probit (binary)"]:
+            fit_function = "logit" if model_family == "Logit (binary)" else "probit"
+            binary_formula = f"__outcome ~ {rhs}"
+            code = f'''import statsmodels.formula.api as smf
+from scipy.stats import chi2
+
+d = df[{selected_columns!r}].dropna().copy()
+d["__outcome"] = pd.Categorical(d[{outcome!r}]).codes
+if d["__outcome"].nunique() != 2:
+    raise ValueError("The selected outcome must have exactly two levels.")
+model = smf.{fit_function}(formula={binary_formula!r}, data=d).fit(disp=False)
+result = pd.DataFrame({{"coef": model.params, "SE": model.bse, "z": model.tvalues, "p-value": model.pvalues}})
+overall = pd.DataFrame({{"LR chi2": [model.llr], "df": [model.df_model], "p-value": [model.llr_pvalue]}})'''
+
+        elif model_family == "Ordinal logit":
+            outcome_levels = list(df[outcome].dropna().unique())
+            ordered_levels = st.multiselect(
+                "Outcome order (first to last)", outcome_levels, default=outcome_levels
+            )
+            st.caption("Select levels in the intended ordinal order.")
+            ordinal_rhs = " + ".join(predictor_terms)
+            if not ordinal_rhs:
+                st.warning("Ordinal logit requires at least one predictor.")
+                code = "raise ValueError('Select at least one predictor for ordinal logit.')"
+            else:
+                design_formula = ordinal_rhs
+                code = f'''import numpy as np
+import patsy
+from scipy.stats import chi2
+from statsmodels.miscmodels.ordinal_model import OrderedModel
+
+d = df[{selected_columns!r}].dropna().copy()
+d["__outcome"] = pd.Categorical(
+    d[{outcome!r}], categories={ordered_levels!r}, ordered=True
+).codes
+if (d["__outcome"] < 0).any() or d["__outcome"].nunique() < 2:
+    raise ValueError("Select all outcome levels in their intended order.")
+X = patsy.dmatrix({design_formula!r}, d, return_type="dataframe").drop(columns="Intercept")
+model = OrderedModel(d["__outcome"], X, distr="logit").fit(method="bfgs", disp=False)
+result = pd.DataFrame({{"coef": model.params.loc[X.columns], "SE": model.bse.loc[X.columns], "z": model.tvalues.loc[X.columns], "p-value": model.pvalues.loc[X.columns]}})
+null_model = OrderedModel(d["__outcome"], np.empty((len(d), 0)), distr="logit").fit(method="bfgs", disp=False)
+lr_chi2 = 2 * (model.llf - null_model.llf)
+overall = pd.DataFrame({{"LR chi2": [lr_chi2], "df": [len(X.columns)], "p-value": [chi2.sf(lr_chi2, len(X.columns))]}})'''
+
+        else:
+            glm_family_expression = {
+                "Poisson": "sm.families.Poisson()",
+                "Negative binomial": "sm.families.NegativeBinomial()",
+                "Gaussian": "sm.families.Gaussian()",
+                "Binomial": "sm.families.Binomial()",
+                "Gamma": "sm.families.Gamma()",
+            }[glm_family]
+            glm_formula = formula
+            if glm_family == "Binomial":
+                glm_formula = f"__outcome ~ {rhs}"
+                response_setup = f'd["__outcome"] = pd.Categorical(d[{outcome!r}]).codes\n'
+            else:
+                response_setup = ""
+            null_formula = f"{'__outcome' if glm_family == 'Binomial' else f'Q({outcome!r})'} ~ 1"
+            code = f'''import statsmodels.api as sm
+import statsmodels.formula.api as smf
+from scipy.stats import chi2
+
+d = df[{selected_columns!r}].dropna().copy()
+{response_setup}family = {glm_family_expression}
+model = smf.glm(formula={glm_formula!r}, data=d, family=family).fit()
+result = pd.DataFrame({{"coef": model.params, "SE": model.bse, "z": model.tvalues, "p-value": model.pvalues}})
+null_model = smf.glm(formula={null_formula!r}, data=d, family=family).fit()
+lr_chi2 = max(0, 2 * (model.llf - null_model.llf))
+lr_df = model.df_model - null_model.df_model
+overall = pd.DataFrame({{"LR chi2": [lr_chi2], "df": [lr_df], "p-value": [chi2.sf(lr_chi2, lr_df)]}})'''
+
 elif analysis.startswith("13."):
 
     st.subheader("Generate Multiple Exam Versions")
@@ -480,7 +614,7 @@ if not analysis.startswith("13."):
         try:
             plt.close("all")
             exec(code, env)
-            for name in ["result", "posthoc", "observed", "expected"]:
+            for name in ["result", "posthoc", "observed", "expected", "overall", "anova"]:
                 if name in env:
                     st.subheader(name.capitalize())
                     value = env[name]
