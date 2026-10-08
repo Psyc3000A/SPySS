@@ -9,3 +9,5 @@ beautifulsoup4
 python-docx
 statsmodels
 scikit-learn
+polars
+datascipsych
